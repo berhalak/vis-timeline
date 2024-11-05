@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Timeline | other | performance</title>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body,
+      html {
+        font-family: arial, sans-serif;
+        font-size: 11pt;
+      }
+
+      #visualization {
+        height: 400px;
+      }
+      .vis-labelset .vis-label .vis-inner {
+        padding: 0px;
+      }
+    </style>
+
+    <!-- note: moment.js must be loaded before vis-timeline-graph2d or the embedded version of moment.js is used -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.24.0/moment.min.js"></script>
+    <script src="https://unpkg.com/grainjs@1.0.2/dist/grain-full.min.js"></script>
+    <script src="https://unpkg.com/vis-timeline@latest/standalone/umd/vis-timeline-graph2d.min.js"></script>
+    <link
+      href="https://unpkg.com/vis-timeline@latest/styles/vis-timeline-graph2d.min.css"
+      rel="stylesheet"
+      type="text/css"
+    />
+  </head>
+
+  <body>
+    <p>
+      Test the performance with a lot of groups.
+    </p>
+    <p>
+      <label for="count">Number of items</label>
+      <input id="count" value="20" />
+      <input id="draw" type="button" value="draw" />
+    </p>
+    <div id="visualization"></div>
+
+    <button id="run">Run</button>
+
+    <script>
+      let FIRST = 1;
+      let LAST = 17;
+
+      // create a dataset with items
+      const now = moment().minutes(0).seconds(0).milliseconds(0);
+      const items = new vis.DataSet({
+        type: { start: "ISODate", end: "ISODate" },
+      });
+      const { observable, dom, computed } = grainjs;
+
+      // Create a data set with groups (each item has its own group);
+      const groups = new vis.DataSet();
+
+      // create data
+      function createData() {
+        const count = parseInt(document.getElementById("count").value) || 100;
+        const newData = [];
+        const newGroups = [];
+        const start = now;
+        for (let i = 1; i <= count; i++) {
+          newData.push({
+            id: i,
+            group: i,
+            content: "item " + i,
+            start: start + 24 * 3600 * 1000 * i,
+          }); // much much faster than now.clone add days
+          const group = { id: i, height: 22, visible: i <= 17 };
+          newGroups.push(group);
+        }
+
+        items.clear();
+        items.add(newData);
+
+        newGroups.unshift({ id: "top", height: 0 });
+        newGroups.push({ id: "bottom", height: 0 });
+
+        groups.clear();
+        groups.add(newGroups);
+      }
+
+      document.getElementById("draw").onclick = createData;
+
+      const container = document.getElementById("visualization");
+      const options = {
+        height: 400,
+        groupTemplate: function (group) {
+          return dom(
+            "div",
+            dom.style("height", `${group.height}px`),
+            dom.text(String(group.id))
+          );
+        },
+        template: function (item) {
+          return dom(
+            "div",
+            dom.style("height", "10px"),
+            dom.style("background-color", "red"),
+            dom.text(String(item.content))
+          );
+        },
+        editable: true,
+        start: now.clone().add(-3, "days"),
+        end: now.clone().add(11, "days"),
+        zoomMin: 1000 * 60 * 60 * 24, // a day
+        zoomMax: 1000 * 60 * 60 * 24 * 30 * 3, // three months
+        xss: {
+          disabled: true,
+        },
+        groupHeightMode: "fixed",
+        margin: 0,
+        horizontalScroll: true,
+        // verticalScroll: true,
+      };
+
+      createData();
+
+      const timeline = new vis.Timeline(container);
+
+      timeline.setOptions(options);
+      timeline.setGroups(groups);
+      timeline.setItems(items);
+
+      function px(obs) {
+        return (use) => use(obs) + "px";
+      }
+
+      document.getElementById("run").onclick = () => {
+        groups.updateOnly({ id: 17, height: 100 });
+      };
+
+      const inspectArgs = (...args) => console.warn(...args);
+
+      const center = document.querySelector(".vis-center");
+
+      let lastMove = -1;
+
+      timeline.on("scrollSide", inspectArgs);
+
+      timeline.on("panmove", () => {
+        // This will have negative values if we scroll up.
+        const scrollTop = timeline._getScrollTop();
+
+        if (lastMove === scrollTop) {
+          return;
+        }
+        lastMove = scrollTop;
+
+        const itemsCount = groups.length - 2;
+
+        const windowHeight = center.clientHeight;
+
+        // Lets calculate how many items are visible (even partialy).
+        const ITEM_HEIGHT = 22;
+
+        const itemsVisible = Math.ceil((windowHeight - 1) / ITEM_HEIGHT);
+        const firstVisible = Math.max(
+          1,
+          Math.abs(Math.floor(scrollTop / ITEM_HEIGHT))
+        );
+        const lastVisible = Math.abs(
+          Math.ceil((Math.abs(scrollTop) + windowHeight) / ITEM_HEIGHT)
+        );
+
+        // Now we will hide all other items, and resize first and last one.
+        const toHideBefore = Math.max(0, firstVisible - 1);
+        const toHideAfter = Math.max(0, itemsCount - lastVisible);
+
+        const firstVisibleIndex = Math.max(1, firstVisible);
+        const lastVisibleIndex = Math.min(itemsCount, lastVisible);
+
+        const newHeightBefore = Math.max(0, toHideBefore * ITEM_HEIGHT);
+        const newHeightAfter = Math.max(0, toHideAfter * ITEM_HEIGHT);
+
+        // console.debug(
+        //   'scrollTop', scrollTop, 'windowHeight', windowHeight,
+        //   'firstVisible', firstVisible, 'lastVisible', lastVisible, 'itemsVisible', itemsVisible, 'itemsCount', itemsCount, 'toHideBefore', toHideBefore, 'toHideAfter', toHideAfter, 'newHeightBefore', newHeightBefore, 'newHeightAfter', newHeightAfter);
+
+        const update = [];
+
+        // We know which ones where visible and which weren't based on FIRST and LAST.
+        // So we can calculate delta and just create update that is needed.
+
+        const start = Math.min(FIRST, firstVisibleIndex);
+        const end = Math.max(LAST, lastVisibleIndex);
+        for (let i = start; i <= end; i++) {
+          const visible = i >= firstVisibleIndex && i <= lastVisibleIndex;
+
+          if (visible && i >= FIRST && i <= LAST) {
+            continue;
+          }
+          if (!visible && (i < FIRST || i > LAST)) {
+            continue;
+          }
+
+          update.push({ id: i, visible: visible });
+        }
+
+        FIRST = firstVisibleIndex;
+        LAST = lastVisibleIndex;
+
+        update.push({ id: "top", height: newHeightBefore });
+        update.push({ id: "bottom", height: newHeightAfter });
+
+        // console.log('update', update);
+        groups.updateOnly(update);
+      });
+    </script>
+
+    <style>
+      .vis-labelset .vis-label .vis-inner {
+        padding: 0px;
+      }
+
+      .vis-item .vis-item-content {
+        padding: 0px;
+      }
+    </style>
+  </body>
+</html>
